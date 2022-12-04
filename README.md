@@ -1,0 +1,2 @@
+# KappaMQ
+Simple message queue
