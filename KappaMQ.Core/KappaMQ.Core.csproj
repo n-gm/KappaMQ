@@ -6,4 +6,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\KappaMQ.Classes\KappaMQ.Classes.csproj" />
+    <ProjectReference Include="..\KappaMQ.Interfaces\KappaMQ.Interfaces.csproj" />
+  </ItemGroup>
+
 </Project>

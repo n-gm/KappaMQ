@@ -8,9 +8,5 @@ namespace KappaMQ.Core.Messages
         /// Time when message was leased
         /// </summary>
         public DateTime LeaseTime { get; set; } = DateTime.MinValue;
-        /// <summary>
-        /// Message state
-        /// </summary>
-        public MessageState State { get; set; }
     }
 }

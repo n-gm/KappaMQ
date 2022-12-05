@@ -1,107 +1,100 @@
 ﻿using KappaMQ.Classes.Messages;
 using KappaMQ.Core.Messages;
 using KappaMQ.Core.Settings;
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace KappaMQ.Core.Queues
 {
     internal class Queue
     {
-        private List<CoreMessage> _messages;
-        private List<Subscriber> _subscribers;
+        private ConcurrentQueue<CoreMessage> _messages;
+        private List<CoreMessage> _leasedMessages;
         private MQSettings _settings;
-        public string Name { get; set; }
 
-        public Queue(string queueName, MQSettings settings)
+        public string Name { get; private set; }
+
+        public Queue(string name, MQSettings settings)
         {
-            Name = queueName;
+            _messages = new();
+            _leasedMessages = new();
             _settings = settings;
-            _messages = new List<CoreMessage>();
-            _subscribers = new List<Subscriber>();
+            Name = name;
         }
 
-        public Guid Subscribe(Action<MQMessage> action)
+        public async Task<MQMessage> ConsumeAsync(CancellationToken token = default)
         {
-            var subscriber = new Subscriber
-            {
-                Id = Guid.NewGuid(),
-                Action = action,
-                MessageId = Guid.Empty,
-                State = SubscriberState.Active
-            };
-            lock (_subscribers)
-            {
-                _subscribers.Add(subscriber);
+            CoreMessage message;
+            while (!_messages.TryDequeue(out message))
+            {                
+                await Task.Delay(_settings.ReactionTime, token);
             }
-            return subscriber.Id;
-        }
+            message.LeaseTime = DateTime.Now;
 
-        public void Unsubscribe(Guid id)
-        {
-            lock (_subscribers)
+            lock (_leasedMessages)
             {
-                for(int i = 0; i < _subscribers.Count(); i++)
-                {
-                    if (_subscribers[i].Id == id)
-                    {
-                        _subscribers.RemoveAt(i);
-                    }
-                }
+                _leasedMessages.Add(message);
             }
+            return message;
         }
 
-        public void Approve(Guid messageGuid)
+        public void Accept(Guid id)
         {
-            lock (_messages)
+            lock (_leasedMessages)
             {
-                foreach (CoreMessage message in _messages)
+                for (int i = 0; i < _leasedMessages.Count(); i++)
                 {
-                    if (message.Id == messageGuid)
+                    if (_leasedMessages[i].Id == id)
                     {
-                        _messages.Remove(message);
+                        _leasedMessages.RemoveAt(i);
                         return;
                     }
                 }
             }
         }
 
-        public void Decline(Guid messageGuid)
+        public void Decline(Guid id)
         {
-            lock (_messages)
+            CoreMessage? message = null;
+            lock (_leasedMessages)
             {
-                foreach (CoreMessage message in _messages)
+                for (int i = 0; i < _leasedMessages.Count(); i++)
                 {
-                    if (message.Id == messageGuid)
+                    if (_leasedMessages[i].Id == id)
                     {
-                        message.State = MessageState.Available;
-                        message.LeaseTime = DateTime.MinValue;
-                        return;
+                        message = _leasedMessages[i];
+                        break;
                     }
                 }
             }
+
+            if (message == null)
+                return;
+
+            message.LeaseTime = DateTime.MinValue;
+            _messages.Enqueue(message);
         }
 
-        public MQMessage? NextMessage()
+        public MQMessage? Consume()
         {
-            lock (_messages) {
-                foreach (CoreMessage message in _messages)
-                {
-                    if (message.State == MessageState.Available)
-                    {
-                        message.State = MessageState.Leased;
-                        message.LeaseTime = DateTime.Now;
-                        return message;
-                    } else if (message.LeaseTime.AddSeconds(_settings.LeaseTime) >= DateTime.Now)
-                    {
-                        message.LeaseTime = DateTime.Now;
-                        return message;
-                    }
-                }
-            }
-            return null;
+            _messages.TryDequeue(out var message);
+            return message;
         }
 
-        public void Produce(string body)
+        public async IAsyncEnumerable<CoreMessage> MessagesAsync([EnumeratorCancellation]CancellationToken token = default)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                if (_messages.TryDequeue(out var message))
+                {
+                    yield return message;
+                }
+                await Task.Delay(_settings.ReactionTime, token);
+            }
+        }
+
+        public void Publish(string body, MessagePersistence persistence)
         {
             var message = new CoreMessage
             {
@@ -109,19 +102,16 @@ namespace KappaMQ.Core.Queues
                 CreateDate = DateTime.Now,
                 Id = Guid.NewGuid(),
                 LeaseTime = DateTime.MinValue,
-                Queue = Name,
-                State = MessageState.Available
+                Persistence = persistence,
+                Queue = Name
             };
-            lock (_messages)
-            {
-                _messages.Add(message);
-            }
+            _messages.Enqueue(message);
         }
 
-        public void Produce<T>(T body) where T : class
+        public void Publish<T>(T body, MessagePersistence persistence) where T:class
         {
-            var value = JsonSerializer.Serialize<T>(body);
-            Produce(value);
+            var bodyJson = JsonSerializer.Serialize(body);
+            Publish(body, persistence);
         }
     }
 }
